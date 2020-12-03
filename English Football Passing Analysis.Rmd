@@ -1,0 +1,635 @@
+---
+title: "Capstone CYO - English Football Passing Analysis"
+author: "Stephen Clarke"
+date: "03/12/2020"
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r include=FALSE}
+#Install the following packages if required
+
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org") 
+if(!require(dslabs)) install.packages("dslabs", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+if(!require(dplyr)) install.packages("dplyr", repos = "http://cran.us.r-project.org")
+if(!require(ggplot2)) install.packages("ggplot2", repos = "http://cran.us.r-project.org")
+if(!require(ggthemes)) install.packages("ggthemes", repos = "http://cran.us.r-project.org")
+if(!require(ggrepel)) install.packages("ggrepel", repos = "http://cran.us.r-project.org")
+if(!require(Lahman)) install.packages("Lahman", repos = "http://cran.us.r-project.org")
+if(!require(lattice)) install.packages("lattice", repos = "http://cran.us.r-project.org")
+if(!require(e1071)) install.packages("e1071", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(knitr)) install.packages("knitr", repos = "http://cran.us.r-project.org")
+if(!require(tidyr)) install.packages("tidyr", repos = "http://cran.us.r-project.org")
+if(!require(stringr)) install.packages("stringr", repos = "http://cran.us.r-project.org")
+if(!require(readr)) install.packages("readr", repos = "http://cran.us.r-project.org")
+
+```
+
+## Executive Summary
+
+The purpose of this report was to create a model to evaluate the passing ability of football players in the English football leagues, via their pass accuracy, while minimising any biases which contribute to a higher or lower pass accuracy. Additionally, it provided a means of predicting a players pass accuracy, using the aforementioned biases.
+
+Through data exploration and visualisation techniques, it was found that the pass accuracy of a player is impacted strongly by the position they play on the pitch and the team they play for.
+Using the average pass accuracy with the Naive Baseline Model, we could achieve a decent RMSE of **6.016**. The position bias was then accounted for and used to improve the RMSE of the models to **4.64**. This was then further improved by adding the team bias, to achieve an RMSE of **3.265**.
+
+Regularisation was attempted with the number of 'Passes per 90' as a factor to try and further improve the model, but this unfortunately increased the RMSE to above 50, so would not be useful.
+
+
+
+## Method and Analysis
+
+I have broken down our 'Method and Analysis' section into four sub-sections; Data Cleaning, Data Exploration, Insights Gained, and Modelling Approach.
+
+
+
+#### **Data Cleaning**
+
+To start, we load the required libraries, having previously installed them.
+
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(dslabs)
+library(data.table)
+library(dplyr)
+library(ggplot2)
+library(ggthemes)
+library(ggrepel)
+ds_theme_set()
+library(Lahman)
+library(lattice)
+library(e1071)
+library(caret)
+library(knitr)
+library(tidyr)
+library(stringr)
+library(readr)
+memory.limit(56000)
+```
+
+
+The data set which includes all of the passing data of football players from the top three divisions in English football is downloaded via GitHub. There are two blank columns in the Team_Passing_Data data set called 'X' and 'X.1', so these are removed along with the 'League' column, as this column already exists in the Player_Passing_Data data set.
+
+
+```{r}
+
+Player_Passing_Data <- read.csv("https://raw.githubusercontent.com/sclarke-transferstat/HarvardX-Capstone-Passing-Analysis/main/English%20Football%20Player%20Passing%20Data%202019-20.csv")
+
+Team_Passing_Data <- read.csv("https://raw.githubusercontent.com/sclarke-transferstat/HarvardX-Capstone-Passing-Analysis/main/English%20Football%20Team%20Passing%20Data%202019-20.csv")
+
+#Remove League column in Team_Passing_Data as we already have that column in the Player_Passing Data. We also remove the last 2 columns as they are blank
+
+Team_Passing_Data <- within(Team_Passing_Data, rm("League", "X", "X.1"))
+
+```
+
+
+We join these two data sets together by 'Team', using the left.join function, so that we can examine the players relative to the club that they have been playing for.
+
+\newpage
+```{r}
+
+Passing_Data <- left_join(Player_Passing_Data, Team_Passing_Data, by = "Team")
+
+kable(head(Passing_Data))
+
+Passing_Data$League <- factor(Passing_Data$League, levels=c("Premier League", "Championship", "League One"))
+
+```
+
+
+As the default ordering of character variables is alphabetical, we have to order the Leagues as factors based on their actual level. Therefore, we put the Premier League first, Championship second and League One third.
+
+
+\newpage
+
+#### **Data Exploration**
+
+We start by having a look at the outright most accurate and inaccurate passers in the Premier League.
+
+
+```{r}
+Accurate_Passers <- Passing_Data %>%
+  select(Player, Team, League, Position, Pass_Accuracy) %>%
+  filter(League== "Premier League") %>%
+  arrange(desc(Pass_Accuracy)) %>%
+  head(n=15)
+
+kable(Accurate_Passers)
+```
+
+
+It is clear that players playing as Centre Backs, Midfielders and Goalkeepers are more likely to have high passing accuracies. Additionally, most players in the top 15 tend to play for either Liverpool, Manchester City or Chelsea.
+
+\newpage
+
+We explore the most inaccurate passers in the Premier League to see what could influence having a poor pass accuracy.
+
+
+```{r}
+Inaccurate_Passers <- Passing_Data %>%
+  select(Player, Team, League, Position, Pass_Accuracy) %>%
+  filter(League== "Premier League") %>%
+  arrange(Pass_Accuracy) %>%
+  head(n=15)
+
+kable(Inaccurate_Passers)
+  
+  
+```
+
+
+We can see that Forwards and Full Backs tend to have the worst pass accuracy within the league. It is also noticeable that there are no Liverpool, Manchester City or Chelsea players within the bottom 15. This suggests that the position a player plays, and the team he plays for, have an impact on his pass accuracy. We will examine these potential 'biases' further.
+
+
+\newpage
+
+##### **Effect of Team**
+
+We use 'Team_Pass_Accuracy' to further analyse the effects of playing for a particular club, across the three leagues.
+
+
+```{r message=FALSE, warning=FALSE}
+
+p <- Passing_Data %>%
+group_by(League) %>%
+ggplot(aes(Pass_Accuracy, Team_Pass_Accuracy)) +
+geom_point(aes(col= factor(League))) +
+geom_smooth(method = "lm")
+
+p + facet_grid(cols = vars(League)) +
+xlab("Player Pass Accuracy") +
+  ylab("Team Pass Accuracy") +
+  ggtitle("Player Passing Relative to their Team")
+
+```
+
+
+From the above graphs it certainly looks like the pass accuracy of a particular team, is correlated with the individual pass accuracy of players. We use the 'cor.test' function to get a value for this correlation and assess the statistical significance of this relationship.
+
+
+```{r message=FALSE, warning=FALSE}
+
+cor.test(Passing_Data$Pass_Accuracy, Passing_Data$Team_Pass_Accuracy, method=c("pearson", "kendall", "spearman"))
+
+```
+
+
+The very small p-value indicates statistical significance in this relationship.
+
+
+\newpage
+
+##### **Effect of Position**
+
+We now look at the impact that playing in a certain position has on pass accuracy. To do so, we must first separate the 'Position' metric into "Main_Position", "Secondary_Position" and "Tertiary_Position", so that we can look at the position that a player has played in most during the season.
+
+
+```{r message=FALSE, warning=FALSE}
+
+Passing_Data <- Passing_Data %>%
+    separate(Position, c("Main_Position", "Secondary_Position", "Tertiary_Position"), fill = "right")
+
+Passing_Data$Main_Position <- factor(Passing_Data$Main_Position, levels=c("GK", "RCB3", "RCB", "CB", "LCB", "LCB3", "RB", "LB", "RWB", "LWB", "RDMF", "DMF", "LDMF", "RCMF3", "RCMF", "LCMF", "LCMF3", "RAMF", "AMF", "LAMF", "RW", "LW", "RWF", "LWF", "CF"))
+
+```
+
+
+Once the data has been split into the 'Main Position' of the players, these positions must then be ordered. Otherwise, they will be in alphabetical order by default. This data can then be better visualised in a boxplot.
+
+
+```{r message=FALSE, warning=FALSE}
+
+Passing_Data %>% ggplot(aes(x = Main_Position, y = Pass_Accuracy, col = Main_Position)) +
+     geom_boxplot() +
+xlab("Main Position") +
+  ylab("Pass Accuracy") +
+  ggtitle("How Pass Accuracy Changes by Position")
+
+```
+
+
+The boxplot above gives a very good indication of the varying pass accuracy of different positions. Centre Backs and Defensive Midfielders have the highest median pass accuracy, while Centre Forwards and Full Backs have the lowest.
+
+
+\newpage
+
+##### **Effect of Pass Difficulty**
+
+Another factor in pass accuracy I would like to consider is the difficulty of passes. I have created a new column called 'Safe_Pass_Rate' which is how many backward and lateral passes a player attempts, relative to their total number of passes attempted. As goalkeepers play a very small number of backward and lateral passes, I have removed them from the list.
+
+
+```{r message=FALSE, warning=FALSE}
+
+Passing_Data <- Passing_Data %>%
+  mutate(Safe_Pass_Rate = (Back_passes_per_90 + Lateral_passes_per_90)/Passes_per_90) %>%
+  filter(Main_Position %in% c("RCB3", "RCB", "CB", "LCB", "LCB3", "RB", "LB", "RWB", "LWB", "RDMF", "DMF", "LDMF", "RCMF3", "RCMF", "LCMF", "LCMF3", "RAMF", "AMF", "LAMF", "RW", "LW", "RWF", "LWF", "CF"))
+
+Passing_Data %>%
+  ggplot(aes(Pass_Accuracy, Safe_Pass_Rate)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+xlab("Player Pass Accuracy") +
+  ylab("Safe Pass Rate") +
+  ggtitle("Correlation between 'Safe Pass Rate' and Player Pass Accuracy")
+
+```
+
+
+It seems that there is certainly a correlation between how many 'Safe Passes' a player makes and his pass accuracy, but this could be explained by the team that they are playing for. Teams like Liverpool and Man City play a large number of lateral passes due to their high possession numbers, so this could be what really provides the correlation.
+
+
+```{r message=FALSE, warning=FALSE}
+
+Passing_Data %>%
+  ggplot(aes(Team_Pass_Accuracy, Safe_Pass_Rate)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+xlab("Team Pass Accuracy") +
+  ylab("Safe Pass Rate") +
+  ggtitle("Correlation between 'Safe Pass Rate' and Team Pass Accuracy")
+
+```
+
+
+The above graph between Team_Pass_Accuracy and Safe_Pass_Rate shows a similar correlation with seemingly smaller error. Furthermore, making a large number of safe passes, does not mean that a player isn't good at making 'non-safe' passes.
+
+
+
+#### **Insights Gained**
+
+Through the Data Exploration section, we have looked at numerous factors that seem to influence the passing accuracy of an individual footballer. The position that a player plays seems to have a large effect on their pass accuracy, as does the team that they are playing for.
+The 'main' position and team will be the first things we look at when trying to get a predictive RMSE for our players. For example, a central midfielder for Liverpool, such as Georginio Wijnaldum, will have a much higher pass accuracy than a right back for Burnley, such as Phil Bardsley. Therefore, we will account for position bias and team bias in our Modelling Approach section.
+
+
+\newpage
+
+#### **Modelling Approach**
+
+The seed is set to 1 and the data is split into test and train sets, where the train set is 90% of Passing_Data.
+
+
+```{r message=FALSE, warning=FALSE}
+
+set.seed(1, sample.kind="Rounding")
+
+train_index <- createDataPartition(y = Passing_Data$Pass_Accuracy, times = 1, p = 0.9, list = FALSE)
+
+Passing_Data_train <- Passing_Data[train_index,]
+Passing_Data_test <- Passing_Data[-train_index,]
+
+```
+
+Below is the standard formula for calculating root mean squared error (RMSE), which assesses the effectiveness of a predictive model.
+
+```{r}
+RMSE <- function(true_ratings, predicted_ratings){
+  sqrt(mean((true_ratings - predicted_ratings)^2, na.rm = TRUE))
+}
+```
+
+
+We would like to get as low an RMSE as possible for the model to be truly predictive.
+
+
+
+
+
+
+
+
+##### **Naive Baseline RMSE**
+
+We start our approach to working out the RMSE using the Naive Baseline Model.
+
+The formula for this is:
+
+$$Y_{u,i} = \hat{\mu} + \varepsilon_{u,i}$$
+Where $\hat{\mu}$ is the mean and $\varepsilon_{i,u}$ is the independent errors centered at 0.
+
+The average pass accuracy for all players in the data set is as below:
+
+
+```{r}
+
+mu <- mean(Passing_Data_train$Pass_Accuracy)
+mu
+
+```
+
+
+```{r}
+
+naive_rmse <- RMSE(Passing_Data_test$Pass_Accuracy, mu)
+
+naive_rmse
+
+model_results <- data.frame(model = "Naive Baseline Model", RMSE = naive_rmse)
+
+model_results
+
+```
+
+
+The RMSE of the Naive Baseline Model is **6.016**, which is not a bad RMSE value, but this could be improved upon.
+
+
+\newpage
+
+##### **Using Position Bias to Improve RMSE**
+
+Earlier the data was partioned into test and train sets to allow for more in depth modelling. These are called Passing_Data_test and Passing_Data_train respectively.
+
+We add the term $b_P$ to compensate for position bias, where $b_P$ is the average pass accuracy for each given position in this data set. The new formula will be: 
+
+$$Y_{u,i} = \mu + b_P + \varepsilon_{u,i}$$
+
+To get $b_P$ we use the least squares estimate.
+
+
+```{r message=FALSE}
+
+Position_avg <- Passing_Data_train %>%
+   group_by(Main_Position) %>%
+   summarise(b_P = mean(Pass_Accuracy - mu))
+
+```
+
+
+```{r}
+
+Position_avg %>% arrange(desc(b_P))
+
+```
+
+
+We see from the above table how some positions have much higher pass accuracies than others. This is what we are trying to account for.
+
+We then use our RMSE formula to see how effective it is to account for position bias, and hence, how good this method is for prediction.
+
+
+```{r}
+predicted_ratings <- Passing_Data_test %>% 
+  left_join(Position_avg, by = 'Main_Position') %>%
+  mutate(pred1 = mu + b_P) %>%
+  .$pred1
+
+#.$ means pull() function
+
+Position_bias <- RMSE(Passing_Data_test$Pass_Accuracy, predicted_ratings)
+
+```
+
+```{r warning=FALSE}
+
+model_results <- bind_rows(model_results, data_frame(model = "Position Bias Model", RMSE = Position_bias))
+
+model_results
+
+```
+
+
+The RMSE has been reduced to just under **4.64** by including position bias.
+
+We join our original Passing_Data with the Position_avg, and we can then visualise the correlation between Team Pass Accuracy and Player Pass Accuracy, once the position bias has been accounted for.
+
+
+```{r warning=FALSE}
+
+Passing_Data_With_PBias <- left_join(Passing_Data, Position_avg, by = "Main_Position")
+
+Passing_Data_With_PBias <- Passing_Data_With_PBias %>% mutate(New_Pass_Acc = Pass_Accuracy - b_P) %>% select(Player, Main_Position, Passport_country, Team, League, Minutes_played, Pass_Accuracy, Team_Pass_Accuracy, b_P, New_Pass_Acc) %>% arrange(desc(New_Pass_Acc))
+
+p <- Passing_Data_With_PBias %>%
+group_by(League) %>%
+ggplot(aes(New_Pass_Acc, Team_Pass_Accuracy)) +
+geom_point(aes(col= factor(League))) +
+geom_smooth(method = "lm")
+
+p + facet_grid(cols = vars(League)) +
+xlab("Player Pass Accuracy Adjusted for Position Bias") +
+  ylab("Team Pass Accuracy") +
+  ggtitle("Adjusted Player Passing Relative to their Team")
+```
+
+
+The correlation looks to be stronger now that position bias has been taken into account and there appears to be a clear indication that Team bias should also be accounted for.
+
+
+\newpage
+
+##### **Using Team Bias to Improve RMSE**
+
+The next factor to consider to improve the RMSE, is the team that a player plays for. Therefore, we must add in another term, $b_T$, to compensate for this.
+
+$$Y_{u,i} = \mu + b_P + b_T + \varepsilon_{u,i}$$
+Where $b_T$ is the team bias.
+
+
+```{r message=FALSE}
+
+Team_avg <- Passing_Data_train %>% 
+  left_join(Position_avg, by = 'Main_Position') %>% 
+  group_by(Team) %>% 
+  summarize(b_T = mean(Pass_Accuracy - mu - b_P))
+
+```
+
+```{r}
+
+Team_avg
+
+```
+
+From the tibble above, we can see the effect of team bias. An Arsenal player will have on average a 5.96 higher passing accuracy than the average player, while an AFC Wimbledon will have 6.91 lower passing accuracy.
+
+We then use our RMSE formula to see how effective this method is for prediction.
+ 
+```{r}
+
+predicted_ratings <- Passing_Data_test %>% 
+  left_join(Position_avg, by = 'Main_Position') %>% 
+  left_join(Team_avg, by = 'Team') %>% 
+  mutate(b_P_b_T = mu + b_P + b_T) %>%
+  .$b_P_b_T
+
+Team_And_Position_bias <- RMSE(Passing_Data_test$Pass_Accuracy, predicted_ratings)
+
+```
+
+
+```{r}
+
+model_results <- bind_rows(model_results, data_frame(model = "Position and Team Bias Model", RMSE = Team_And_Position_bias))
+
+model_results
+
+```
+
+By including a factor for the bias of teams, we have reduced the RMSE down to **3.265**. This is quite a good RMSE that would suggest that this method would predict a player's passing accuracy relatively accurately.
+
+\newpage
+
+We join our original Passing_Data with the Position_avg and Team_avg to see who would be considered the best passers in the Premier League if we accounted entirely for position and team, and we can then visualise the correlation between Team Pass Accuracy and Player Pass Accuracy, once the position bias has been accounted for.
+
+
+```{r}
+
+Passing_Data_With_PBias <- left_join(Passing_Data, Position_avg, by = "Main_Position")
+
+Passing_Data_With_PTBias <- left_join(Passing_Data_With_PBias, Team_avg, by = "Team")
+
+Passing_Data_With_PTBias <- Passing_Data_With_PTBias %>% 
+  mutate(New_Pass_Acc = Pass_Accuracy - b_P - b_T) %>% 
+  select(Player, Main_Position, Passport_country, Team, League, Minutes_played, Pass_Accuracy, Passes_per_90, Team_Pass_Accuracy, b_P, b_T, New_Pass_Acc) %>% arrange(desc(New_Pass_Acc))
+
+PL_Best_Passers <- Passing_Data_With_PTBias %>%
+  filter(League == "Premier League") %>%
+select(Player, Main_Position, Team, Pass_Accuracy, Passes_per_90, b_P, b_T, New_Pass_Acc) %>%
+ head(n=20)
+
+kable(PL_Best_Passers)
+
+```
+
+
+We see that there is now a much wider variety in position and team for the 'Top 20 Passers' in the Premier League.
+
+\newpage
+
+This can be specified further to get more insights for more niche players. For example, if we were looking for the best Irish passers who are currently playing regularly in English football's top two tiers.
+
+
+```{r}
+Irish_Best_Passers <- Passing_Data_With_PTBias %>% filter(str_detect(Passport_country, "Republic of Ireland"), League %in% c("Premier League", "Championship"), Minutes_played >= 1000) %>% 
+  select(Player, Main_Position, Passport_country, Team, League, Pass_Accuracy, Passes_per_90, b_P, b_T, New_Pass_Acc) %>% 
+  head(n=20)
+
+kable(Irish_Best_Passers)
+
+```
+
+
+\newpage
+
+##### **Regularisation**
+
+When we put the Players in order of the newly accounted for pass accuracy, we notice that some of the players who have benefitted most from this model, have a relatively low 'Passes_per_90'. Therefore, it is worth looking into if we could improve our RMSE by accounting for this. To do so, we will use Regularisation.
+
+Regularisation allows us to penalise players that have got high 'New_Pass_Acc' but low 'Passes_per_90'.
+
+We use λ as a 'tuning parameter' and use cross-validation to get its value.
+
+
+```{r message=FALSE, warning=FALSE}
+
+lambdas <- seq(0, 10, 0.25)
+
+mu <- mean(Passing_Data_train$Pass_Accuracy)
+just_the_sum <- Passing_Data_train %>% 
+  group_by(Main_Position) %>% 
+  summarize(s = sum(Pass_Accuracy - mu), n_P = Passes_per_90)
+
+
+rmses <- sapply(lambdas, function(l){
+  predicted_ratings <- Passing_Data_test %>% 
+    left_join(just_the_sum, by='Main_Position') %>% 
+    mutate(b_P = s/(n_P+l)) %>%
+    mutate(pred = mu + b_P) %>%
+    pull(pred)
+  return(RMSE(predicted_ratings, Passing_Data_test$Pass_Accuracy))
+})
+
+```
+
+
+```{r}
+
+qplot(lambdas, rmses)  
+lambdas[which.min(rmses)]
+
+min(rmses)
+
+```
+
+The above graph shows the lambda value at which the RMSE is at its lowest, having regularised for position bias. However, the RMSE here looks higher than our achieved RMSE without regularisation. This could be a result of overtraining.
+
+We want to account for both position bias and team bias, so we will see if this improves or gets worse through further analysis.
+
+
+```{r message=FALSE, warning=FALSE}
+
+lambdas <- seq(0, 10, 0.25)
+
+rmses <- sapply(lambdas, function(l){
+
+  mu <- mean(Passing_Data_train$Pass_Accuracy)
+  
+  b_P <- Passing_Data_train %>% 
+    group_by(Main_Position) %>%
+    summarize(b_P = sum(Pass_Accuracy - mu)/(Passes_per_90 +l))
+  
+  b_T <- Passing_Data_train %>% 
+    left_join(b_P, by="Main_Position") %>%
+    group_by(Team) %>%
+    summarize(b_T = sum(Pass_Accuracy - b_P - mu)/(Passes_per_90 +l))
+
+  predicted_ratings <- 
+    Passing_Data_test %>% 
+    left_join(b_P, by = "Main_Position") %>%
+    left_join(b_T, by = "Team") %>%
+    mutate(pred = mu + b_P + b_T) %>%
+    pull(pred)
+  
+return(RMSE(predicted_ratings, Passing_Data_test$Pass_Accuracy))
+})
+
+```
+
+
+```{r}
+
+qplot(lambdas, rmses)
+lambda <- lambdas[which.min(rmses)]
+lambda
+
+```
+
+```{r}
+
+model_results <- bind_rows(model_results, data_frame(model = "Regularised Position and Team Bias Model", RMSE = min(rmses)))
+
+model_results
+
+```
+
+The RMSE rises further to **50.799** so it would seem that the regularisation technique used has overtrained the model.
+
+
+\newpage
+
+## Results
+
+The below model results show us that the best way to get a small RMSE value from the methods attempted, is by using the bias of the position and team in which a player plays.
+
+
+```{r}
+model_results
+```
+
+
+We have achieved an RMSE of **3.265** with the 'Position and Team Bias Model' which makes it predictive.
+
+
+
+## Conclusion
+I was able to provide an RMSE of **3.265**, which would mean that this system would be provide a solid prediction of a player's pass accuracy based on his team and position. This could be used to evaluate the passing abilities of players more fairly, who may play in teams or positions that are not condusive to a high passing accuracy.
+What must be taken into consideration, however, is the question; is a player's passing great because he plays for a better team, or does he play for a better team because he is a great passer? Should Liverpool and Man City players be penalised for playing in better teams, as many may be in those teams due to this excellent pass accuracy, and will contribute to the team having a high overall passing accuracy.
+To improve the RMSE number further, it would be good to take into account the difficulty of players' passes, although this is something difficult to quantify using only some of the simplistic metrics that we have to work with.
+In future analyses, I would like to use a larger data set with numerous leagues worldwide, providing a data set of thousands of football players to work with, and get more reliable answers.
